@@ -8,40 +8,49 @@ namespace Blacksmith.ProjectCleaner
 {
     class Program
     {
-        private const int DELETE_RETRIES = 13;
-
-        private static readonly IEnumerable<string> directoryExclussionPatterns = new string[]
+        static void Main(string[] args)
         {
-            ".git",
-        };
+            DirectoryInfo dir;
+            bool retry;
 
-        private static readonly IEnumerable<string> directoryPatterns = new string[]
-        {
-            "TestResults",
-            "packages",
-            ".vs",
-            "node_modules",
-            "dist",
-        };
+            Console.WriteLine("Cleaning projects...");
+            dir = new DirectoryInfo(Environment.CurrentDirectory);
+            retry = true;
 
-        private static readonly IEnumerable<string> projectFilePatterns = new string[]
-        {
-            "*.vbproj",
-            "*.csproj",
-            "*.isproj",
-            "package.json",
-        };
+            for (int i = 1; retry && i <= Settings.DeleteRetries; ++i)
+            {
+                int errors;
 
-        private static readonly IEnumerable<string> projectSubDirectoryPatterns = new string[]
-        {
-            "bin",
-            "obj",
-        };
+                try
+                {
+                    errors = prv_clean(dir);
+                    retry = 0 < errors;
 
-        private static readonly IEnumerable<string> projectSubFilePatterns = new string[]
-        {
-            "*.user",
-        };
+                    if (retry)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Yellow;
+                        Console.WriteLine($"The were {errors} errors! Retrying {i} of {Settings.DeleteRetries}");
+                        Console.ResetColor();
+                    }
+                    else
+                    {
+                        Console.ForegroundColor = ConsoleColor.Green;
+                        Console.WriteLine("Finished!");
+                        Console.ResetColor();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Error.WriteLine($"ERROR: {ex.Message}");
+                    Console.Error.WriteLine($"Retry {i} of {Settings.DeleteRetries}");
+                    Console.ResetColor();
+                    Thread.Sleep(Settings.MilisecondsOfPauseBetweenRetries);
+                }
+            }
+
+            Console.ReadLine();
+        }
 
         private static int prv_deleteDirectory(DirectoryInfo dir, string subDirName)
         {
@@ -64,113 +73,89 @@ namespace Blacksmith.ProjectCleaner
         {
             int errorsResult = 0;
 
-            for (int i = 1; i <= DELETE_RETRIES; ++i)
+            try
             {
-                try
-                {
-                    Console.Write($"Deleting {entry.FullName}... ");
+                Console.Write($"Deleting {entry.FullName}... ");
 
-                    if (entry is DirectoryInfo)
-                        (entry as DirectoryInfo).Delete(true);
-                    else
-                        entry.Delete();
+                prv_clearReadOnlyFlag(entry);
 
-                    Console.WriteLine($"OK");
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    ++errorsResult;
-                    Console.WriteLine();
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine($"ERROR: {ex.Message}");
-                    Console.WriteLine($"Retry {i} of {DELETE_RETRIES}");
-                    Console.ResetColor();
-                    Thread.Sleep(1000);
-                }
+                if (entry is DirectoryInfo)
+                    (entry as DirectoryInfo).Delete(true);
+                else
+                    entry.Delete();
+
+                Console.WriteLine($"OK");
+            }
+            catch (Exception ex)
+            {
+                ++errorsResult;
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.Error.WriteLine($"ERROR: {ex.Message}");
+                Console.ResetColor();
+                Thread.Sleep(Settings.MilisecondsOfPauseBetweenRetries / 4);
             }
 
             return errorsResult;
         }
 
+        private static void prv_clearReadOnlyFlag(FileSystemInfo entry)
+        {
+            DirectoryInfo directory;
+
+            if (entry.Attributes.HasFlag(FileAttributes.ReadOnly))
+                entry.Attributes &= ~FileAttributes.ReadOnly;
+
+            directory = entry as DirectoryInfo;
+
+            if (directory != null)
+                foreach (FileSystemInfo item in directory.EnumerateFileSystemInfos())
+                    prv_clearReadOnlyFlag(item);
+        }
+
         private static int prv_clean(DirectoryInfo currentDir)
         {
             int errorsResult;
-            IEnumerable<FileInfo> entries;
+            bool hasFilesForToBeDeleted;
 
             Asserts.check(currentDir.Exists, $"Directory '{currentDir}' does not exist.");
 
             errorsResult = 0;
 
-            errorsResult += directoryPatterns
-                .Where(pattern => directoryExclussionPatterns.Contains(pattern) == false)
+            errorsResult += Settings
+                .DirectoryPatterns
+                .Where(pattern => false == Settings.DirectoryExclussionPatterns.Contains(pattern))
                 .Sum(pattern => prv_deleteDirectory(currentDir, pattern));
 
-            entries = projectFilePatterns
-                .SelectMany(pattern => currentDir.GetFiles(pattern));
+            hasFilesForToBeDeleted = Settings
+                .ProjectFilePatterns
+                .SelectMany(currentDir.GetFiles)
+                .Any();
 
-            if (entries.Any())
+            if (hasFilesForToBeDeleted)
             {
-                errorsResult += projectSubDirectoryPatterns
-                    .Where(pattern => directoryExclussionPatterns.Contains(pattern) == false)
+                errorsResult += Settings
+                    .ProjectSubDirectoryPatterns
+                    .Where(pattern => false == Settings.DirectoryExclussionPatterns.Contains(pattern))
                     .Sum(pattern => prv_deleteDirectory(currentDir, pattern));
 
                 currentDir.Refresh();
 
-                errorsResult += projectSubFilePatterns
+                errorsResult += Settings
+                    .ProjectSubFilePatterns
                     .SelectMany(pattern => currentDir.GetFiles(pattern))
-                    .Where(entry => directoryExclussionPatterns.Contains(entry.Name) == false)
-                    .Sum(file => prv_deleteEntry(file));
+                    .Where(entry => false == Settings.DirectoryExclussionPatterns.Contains(entry.Name))
+                    .Sum(prv_deleteEntry);
 
                 currentDir.Refresh();
             }
 
             errorsResult += currentDir
                 .EnumerateDirectories()
-                .Where(subDir => directoryExclussionPatterns.Contains(subDir.Name) == false)
-                .Sum(dir => prv_clean(dir));
+                .Where(subDir => false == Settings.DirectoryExclussionPatterns.Contains(subDir.Name))
+                .Sum(prv_clean);
 
             return errorsResult;
         }
 
-        static void Main(string[] args)
-        {
-            DirectoryInfo dir;
-            int errors;
-
-            Console.WriteLine("Cleaning projects...");
-            dir = new DirectoryInfo(Environment.CurrentDirectory);
-
-            for (int i = 1; i <= DELETE_RETRIES; ++i)
-            {
-                try
-                {
-                    errors = prv_clean(dir);
-                    if (errors > 0)
-                    {
-                        Console.ForegroundColor = ConsoleColor.Yellow;
-                        Console.WriteLine($"The were {errors} errors! Retrying {i} of {DELETE_RETRIES}");
-                        Console.ResetColor();
-                    }
-                    else
-                    {
-                        Console.ForegroundColor = ConsoleColor.Green;
-                        Console.WriteLine("Finished!");
-                        Console.ResetColor();
-                        break;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine($"ERROR: {ex.Message}");
-                    Console.WriteLine($"Retry {i} of {DELETE_RETRIES}");
-                    Console.ResetColor();
-                    System.Threading.Thread.Sleep(1000);
-                }
-            }
-
-            Console.ReadLine();
-        }
     }
 }

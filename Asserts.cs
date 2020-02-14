@@ -1,9 +1,7 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 
-namespace ProjectCleaner
+namespace Blacksmith.ProjectCleaner
 {
     internal static class Asserts
     {
